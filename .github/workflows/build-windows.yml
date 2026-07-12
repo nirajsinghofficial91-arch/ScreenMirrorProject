@@ -1,0 +1,37 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch: # Allows manual trigger from the Actions tab
+
+jobs:
+  build:
+    name: Build .NET Console App
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          
+      - name: Restore dependencies
+        working-directory: ./windows_app
+        run: dotnet restore
+
+      - name: Build and Publish Self-Contained EXE
+        working-directory: ./windows_app
+        # This builds a single-file executable that doesn't require the user to install the .NET runtime
+        run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenMirrorPC.exe
+          path: windows_app/publish/ScreenMirrorPC.exe
