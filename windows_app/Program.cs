@@ -220,7 +220,8 @@ namespace ScreenMirrorPC
         /// <summary>
         /// Read the H.264 video stream from the USB accessory device.
         /// Parses the packet protocol: [MAGIC(4)] [SIZE(4)] [DATA(N)]
-        /// Saves raw H.264 to output.h264 file.
+        /// Pipes to ffplay for LIVE display + saves to file.
+        /// Optimized for 50 Mbps / 60 FPS / 1080p streaming.
         /// </summary>
         private void ReadVideoStream(UsbDevice device)
         {
@@ -231,10 +232,60 @@ namespace ScreenMirrorPC
             // Open Bulk IN endpoint (endpoint 0x81 is standard for AOA)
             var reader = device.OpenEndpointReader(ReadEndpointID.Ep01);
 
+            // ═══════════════════════════════════════════════════════════
+            // BUFFER SIZES FOR 50 Mbps
+            // 50 Mbps = ~6.25 MB/s. We use 256KB USB read buffer to
+            // avoid USB transfer bottlenecks at this bitrate.
+            // ═══════════════════════════════════════════════════════════
+            var readBuffer = new byte[256 * 1024]; // 256 KB read buffer
+
             string outputFile = Path.Combine(Environment.CurrentDirectory, "output.h264");
-            Console.WriteLine($"[OK] Connected! Reading H.264 stream...");
-            Console.WriteLine($"[OK] Saving to: {outputFile}");
-            Console.WriteLine("[..] Press Ctrl+C to stop.");
+
+            Console.WriteLine("╔══════════════════════════════════════════════════════╗");
+            Console.WriteLine("║   ScreenMirror USB — 1080p 60FPS 50Mbps Receiver    ║");
+            Console.WriteLine("╠══════════════════════════════════════════════════════╣");
+            Console.WriteLine($"║  Recording to: {Path.GetFileName(outputFile),-38}║");
+            Console.WriteLine("║  Press Ctrl+C to stop                               ║");
+            Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+            Console.WriteLine();
+
+            // Try to launch ffplay for LIVE on-screen display
+            System.Diagnostics.Process? ffplayProcess = null;
+            Stream? ffplayInput = null;
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "ffplay",
+                    // Ultra-low-latency ffplay flags:
+                    // -fflags nobuffer      → don't buffer input
+                    // -flags low_delay      → low delay decoding
+                    // -framedrop            → drop frames if behind
+                    // -probesize 32         → minimal probing (we know the format)
+                    // -analyzeduration 0    → don't analyze, start immediately
+                    // -sync ext             → sync to external clock (real-time)
+                    // -window_title          → window title
+                    Arguments = "-fflags nobuffer -flags low_delay -framedrop " +
+                                "-probesize 32 -analyzeduration 0 -sync ext " +
+                                "-window_title \"ScreenMirror — Live\" " +
+                                "-f h264 -framerate 60 -",
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+
+                ffplayProcess = System.Diagnostics.Process.Start(psi);
+                ffplayInput = ffplayProcess?.StandardInput.BaseStream;
+                Console.WriteLine("[OK] ffplay launched — LIVE video display active!");
+                Console.WriteLine("[TIP] If you don't see the video window, install FFmpeg and add it to PATH.");
+            }
+            catch
+            {
+                Console.WriteLine("[INFO] ffplay not found — recording to file only.");
+                Console.WriteLine("[TIP] Install FFmpeg (winget install FFmpeg) to enable live display.");
+            }
+
             Console.WriteLine();
 
             long totalBytes = 0;
@@ -242,7 +293,6 @@ namespace ScreenMirrorPC
             var startTime = DateTime.Now;
 
             using var fs = File.Create(outputFile);
-            var readBuffer = new byte[16384]; // 16KB read buffer
 
             // State machine for packet parsing
             var headerBuf = new byte[8];
@@ -250,28 +300,35 @@ namespace ScreenMirrorPC
             int payloadRemaining = 0;
             bool inPayload = false;
 
-            while (true)
+            // Console.CancelKeyPress handler for clean shutdown
+            bool running = true;
+            Console.CancelKeyPress += (s, e) =>
             {
-                var ec = reader.Read(readBuffer, 2000, out int bytesRead);
+                e.Cancel = true;
+                running = false;
+            };
+
+            while (running)
+            {
+                var ec = reader.Read(readBuffer, 1000, out int bytesRead);
 
                 if (bytesRead <= 0)
                 {
                     if (ec == ErrorCode.Win32Error || ec == ErrorCode.IoTimedOut)
                     {
-                        // Timeout is normal when no frames are being sent
-                        continue;
+                        continue; // Timeout is normal when phone is idle
                     }
                     Console.WriteLine($"\n[WARN] USB read returned {ec}. Cable disconnected?");
                     break;
                 }
 
-                // Process the received bytes through our packet parser
+                // Process received bytes through the packet parser
                 int pos = 0;
                 while (pos < bytesRead)
                 {
                     if (!inPayload)
                     {
-                        // Reading header
+                        // Accumulate 8-byte header
                         int needed = 8 - headerPos;
                         int available = bytesRead - pos;
                         int toCopy = Math.Min(needed, available);
@@ -282,7 +339,6 @@ namespace ScreenMirrorPC
 
                         if (headerPos == 8)
                         {
-                            // Parse header
                             uint magic = BinaryPrimitives.ReadUInt32BigEndian(headerBuf.AsSpan(0, 4));
                             if (magic == PACKET_MAGIC)
                             {
@@ -292,9 +348,9 @@ namespace ScreenMirrorPC
                             }
                             else
                             {
-                                // Not a valid packet header — could be raw H.264 data
-                                // Write the header bytes as data and continue
+                                // Raw data without our header — write as-is
                                 fs.Write(headerBuf, 0, 8);
+                                ffplayInput?.Write(headerBuf, 0, 8);
                                 totalBytes += 8;
                             }
                             headerPos = 0;
@@ -302,11 +358,15 @@ namespace ScreenMirrorPC
                     }
                     else
                     {
-                        // Reading payload
+                        // Reading payload data
                         int available = bytesRead - pos;
                         int toCopy = Math.Min(payloadRemaining, available);
 
+                        // Write to file
                         fs.Write(readBuffer, pos, toCopy);
+                        // Write to ffplay for live display
+                        try { ffplayInput?.Write(readBuffer, pos, toCopy); } catch { /* ffplay closed */ }
+
                         totalBytes += toCopy;
                         pos += toCopy;
                         payloadRemaining -= toCopy;
@@ -314,17 +374,31 @@ namespace ScreenMirrorPC
                         if (payloadRemaining == 0)
                         {
                             inPayload = false;
+                            try { ffplayInput?.Flush(); } catch { /* ignore */ }
 
-                            // Print progress
-                            var elapsed = (DateTime.Now - startTime).TotalSeconds;
-                            double fps = elapsed > 0 ? frameCount / elapsed : 0;
-                            Console.Write($"\rFrames: {frameCount} | Data: {totalBytes / 1024}KB | FPS: {fps:F1}  ");
+                            // Print live stats every 30 frames (~0.5 sec at 60fps)
+                            if (frameCount % 30 == 0)
+                            {
+                                var elapsed = (DateTime.Now - startTime).TotalSeconds;
+                                double fps = elapsed > 0 ? frameCount / elapsed : 0;
+                                double mbps = elapsed > 0 ? (totalBytes * 8.0 / 1_000_000) / elapsed : 0;
+                                Console.Write($"\r[LIVE] Frames: {frameCount:N0} | " +
+                                              $"FPS: {fps:F1} | " +
+                                              $"Bitrate: {mbps:F1} Mbps | " +
+                                              $"Data: {totalBytes / (1024 * 1024):N1} MB  ");
+                            }
                         }
                     }
                 }
             }
 
-            Console.WriteLine("\n[OK] Stream ended.");
+            Console.WriteLine($"\n\n[OK] Stream ended. Total: {frameCount:N0} frames, {totalBytes / (1024 * 1024):N1} MB");
+            Console.WriteLine($"[OK] Saved to: {outputFile}");
+
+            // Cleanup
+            try { ffplayInput?.Close(); } catch { }
+            try { ffplayProcess?.Kill(); } catch { }
+            try { ffplayProcess?.Dispose(); } catch { }
 
             wholeDevice?.ReleaseInterface(0);
             device.Close();

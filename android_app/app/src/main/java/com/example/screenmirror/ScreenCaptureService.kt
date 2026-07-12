@@ -107,28 +107,52 @@ class ScreenCaptureService : Service() {
     }
 
     private fun setupMediaCodec() {
-        // Get actual screen dimensions
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay
-        }
-
-        // Use a fixed resolution for consistent streaming
-        val width = 720
-        val height = 1280
         val dpi = resources.displayMetrics.densityDpi
 
+        // ═══════════════════════════════════════════════════════════════
+        // ULTRA HIGH QUALITY SETTINGS
+        // ═══════════════════════════════════════════════════════════════
+        val width = 1080          // Full HD width
+        val height = 1920         // Full HD height
+        val bitRate = 50_000_000  // 50 Mbps — near lossless quality
+        val frameRate = 60        // 60 FPS — silky smooth
+        // ═══════════════════════════════════════════════════════════════
+
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+            // Core encoding parameters
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000) // 4 Mbps — good quality for USB
-            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 keyframe per second for recovery
-            // Set profile and level for broad compatibility
-            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+            setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
+
+            // I-frame every 0.5 seconds — faster recovery if frames are lost,
+            // with 50 Mbps budget this won't hurt quality at all
+            setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, 0.5f)
+
+            // H.264 HIGH profile — best compression efficiency, all modern devices support it
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
+            // Level 4.2 — supports 1080p @ 60fps
+            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel42)
+
+            // ── LOW LATENCY TUNING ──
+            // CBR (Constant Bitrate) mode — consistent quality, no bitrate spikes
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+
+            // Request low latency from the encoder (API 30+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            }
+
+            // Request real-time priority (API 23+)
+            setInteger(MediaFormat.KEY_PRIORITY, 0) // 0 = realtime
+
+            // Set max B-frames to 0 — B-frames add latency because they
+            // require future frames to decode. Eliminating them = lower latency.
+            try {
+                setInteger("max-bframes", 0)
+            } catch (_: Exception) { /* Not all encoders support this key */ }
+
+            // Repeat previous frame's header with every frame for faster seeking
+            setInteger(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000 / frameRate)
         }
 
         mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).also { codec ->
@@ -136,6 +160,8 @@ class ScreenCaptureService : Service() {
             inputSurface = codec.createInputSurface()
             codec.start()
         }
+
+        Log.i(TAG, "Encoder configured: ${width}x${height} @ ${frameRate}fps, ${bitRate/1_000_000}Mbps, H.264 High, Low Latency")
 
         // Create VirtualDisplay that renders to the encoder's input surface
         mediaProjection?.let { projection ->
