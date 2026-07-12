@@ -5,7 +5,7 @@ on:
     branches: [ "master", "main" ]
   pull_request:
     branches: [ "master", "main" ]
-  workflow_dispatch: # Allows manual trigger from the Actions tab
+  workflow_dispatch:
 
 jobs:
   build:
@@ -17,27 +17,30 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Gradle Wrapper
+        working-directory: ./android_app
+        run: |
+          # The gradle-wrapper.jar is required but too large to commit.
+          # Generate it fresh using the Gradle setup from the previous step.
+          gradle wrapper --gradle-version 8.0
 
       - name: Grant execute permission for gradlew
         run: chmod +x android_app/gradlew
-        # Create a gradlew file if it doesn't exist, as it might have been missed in the initial stub
-        continue-on-error: true 
 
-      - name: Generate Gradle Wrapper (if missing)
+      - name: Build Release APK
         working-directory: ./android_app
-        run: gradle wrapper --gradle-version 8.1.1
-        
-      - name: Build with Gradle
-        working-directory: ./android_app
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-release.apk
-          path: android_app/app/build/outputs/apk/release/app-release-unsigned.apk
+          name: ScreenMirror-release-apk
+          path: android_app/app/build/outputs/apk/release/*.apk

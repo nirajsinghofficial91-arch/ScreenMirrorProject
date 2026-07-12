@@ -6,10 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>ScreenMirrorPC</RootNamespace>
+    <AssemblyName>ScreenMirrorPC</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="LibUsbDotNet" Version="3.0.87-alpha" />
+    <!-- Stable version of LibUsbDotNet that matches our API usage -->
+    <PackageReference Include="LibUsbDotNet" Version="2.2.29" />
   </ItemGroup>
 
 </Project>
