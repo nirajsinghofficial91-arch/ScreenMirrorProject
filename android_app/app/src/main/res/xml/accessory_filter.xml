@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 
+      This matches the manufacturer and model that the PC host app will send 
+      during the AOA handshake. When the PC sends these exact strings,
+      Android will automatically route the USB connection to this app.
+    -->
+    <usb-accessory 
+        manufacturer="ScreenMirror" 
+        model="ScreenMirror PC" 
+        version="1.0" />
+</resources>
