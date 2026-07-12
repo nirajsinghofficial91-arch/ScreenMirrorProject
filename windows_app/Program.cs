@@ -220,7 +220,7 @@ namespace ScreenMirrorPC
         /// <summary>
         /// Read the H.264 video stream from the USB accessory device.
         /// Parses the packet protocol: [MAGIC(4)] [SIZE(4)] [DATA(N)]
-        /// Pipes to ffplay for LIVE display + saves to file.
+        /// Pipes to ffplay for LIVE display ONLY (no local storage).
         /// Optimized for 50 Mbps / 60 FPS / 1080p streaming.
         /// </summary>
         private void ReadVideoStream(UsbDevice device)
@@ -239,12 +239,10 @@ namespace ScreenMirrorPC
             // ═══════════════════════════════════════════════════════════
             var readBuffer = new byte[256 * 1024]; // 256 KB read buffer
 
-            string outputFile = Path.Combine(Environment.CurrentDirectory, "output.h264");
-
             Console.WriteLine("╔══════════════════════════════════════════════════════╗");
             Console.WriteLine("║   ScreenMirror USB — 1080p 60FPS 50Mbps Receiver    ║");
             Console.WriteLine("╠══════════════════════════════════════════════════════╣");
-            Console.WriteLine($"║  Recording to: {Path.GetFileName(outputFile),-38}║");
+            Console.WriteLine("║  Mode: LIVE STREAMING ONLY (No local storage)       ║");
             Console.WriteLine("║  Press Ctrl+C to stop                               ║");
             Console.WriteLine("╚══════════════════════════════════════════════════════╝");
             Console.WriteLine();
@@ -278,12 +276,15 @@ namespace ScreenMirrorPC
                 ffplayProcess = System.Diagnostics.Process.Start(psi);
                 ffplayInput = ffplayProcess?.StandardInput.BaseStream;
                 Console.WriteLine("[OK] ffplay launched — LIVE video display active!");
-                Console.WriteLine("[TIP] If you don't see the video window, install FFmpeg and add it to PATH.");
             }
             catch
             {
-                Console.WriteLine("[INFO] ffplay not found — recording to file only.");
-                Console.WriteLine("[TIP] Install FFmpeg (winget install FFmpeg) to enable live display.");
+                Console.WriteLine("[FAIL] ffplay not found. LIVE stream cannot be displayed.");
+                Console.WriteLine("[TIP] You MUST install FFmpeg to use this app in LIVE ONLY mode.");
+                Console.WriteLine("[TIP] Run this in PowerShell: winget install FFmpeg");
+                Console.WriteLine("Press any key to exit.");
+                Console.ReadKey();
+                return;
             }
 
             Console.WriteLine();
@@ -291,8 +292,6 @@ namespace ScreenMirrorPC
             long totalBytes = 0;
             int frameCount = 0;
             var startTime = DateTime.Now;
-
-            using var fs = File.Create(outputFile);
 
             // State machine for packet parsing
             var headerBuf = new byte[8];
@@ -349,7 +348,6 @@ namespace ScreenMirrorPC
                             else
                             {
                                 // Raw data without our header — write as-is
-                                fs.Write(headerBuf, 0, 8);
                                 ffplayInput?.Write(headerBuf, 0, 8);
                                 totalBytes += 8;
                             }
@@ -362,8 +360,6 @@ namespace ScreenMirrorPC
                         int available = bytesRead - pos;
                         int toCopy = Math.Min(payloadRemaining, available);
 
-                        // Write to file
-                        fs.Write(readBuffer, pos, toCopy);
                         // Write to ffplay for live display
                         try { ffplayInput?.Write(readBuffer, pos, toCopy); } catch { /* ffplay closed */ }
 
@@ -393,7 +389,6 @@ namespace ScreenMirrorPC
             }
 
             Console.WriteLine($"\n\n[OK] Stream ended. Total: {frameCount:N0} frames, {totalBytes / (1024 * 1024):N1} MB");
-            Console.WriteLine($"[OK] Saved to: {outputFile}");
 
             // Cleanup
             try { ffplayInput?.Close(); } catch { }
